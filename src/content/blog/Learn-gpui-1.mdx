@@ -1,0 +1,502 @@
+---
+title: "Building a Pomodoro Timer with GPUI: A Complete Walkthrough"
+description: "A step-by-step, from-scratch guide to Zed's GPUI framework, using a real Rust desktop Pomodoro app (built with gpui-kit) as the teaching example."
+date: 2026-09-18
+tags: ["rust", "gpui", "desktop", "gui", "tutorial"]
+---
+
+# Building a Pomodoro Timer with GPUI: A Complete Walkthrough
+
+GPUI is the GPU-accelerated Rust UI framework built by the Zed team to power the Zed editor. It's fast, it's low-level enough to give you real control, and it has almost none of the ceremony you'd expect from a "framework." No XML templates, no separate style language, no virtual DOM diffing you have to reason about — just Rust structs, a `Render` trait, and a Tailwind-flavored builder API for layout.
+
+The best way to actually learn it is to build something small and complete. So in this post we're going to dissect a real, working **Pomodoro timer desktop app**, written on top of [`gpui-kit`](https://gpui-kit.com) — a facade crate that bundles GPUI itself together with a styled component library (buttons, etc.) so you don't have to wire up every dependency by hand.
+
+By the end, you'll understand:
+
+- How a GPUI application boots up, and what an `Application`, a `Window`, and a `Root` are
+- What an **entity** is, and why GPUI state doesn't look like a normal Rust struct you just mutate
+- The `Render` trait and how the declarative element tree (`div()`, `.flex()`, `.bg()`, …) works
+- How to handle clicks with `cx.listener`
+- How to run a background timer loop with `cx.spawn` without blocking the UI thread
+- How to fire native OS notifications from Rust
+- How to load and register custom fonts
+
+We'll go top-to-bottom: dependencies first, then the data model, then rendering, then interaction, then the async timer loop, then `main()`.
+
+---
+
+## 1. What you're building
+
+The finished app is a single-window Pomodoro timer with:
+
+- Three session types — **Focus** (25 min), **Short Break** (5 min), **Long Break** (15 min)
+- A big `MM:SS` countdown and an animated progress bar
+- Start / Pause, Reset, and Skip buttons
+- Four little "pomodoro" dots that fill in as you complete focus sessions, mirroring the classic Pomodoro Technique cycle (four focus sessions → long break)
+- A native OS notification when a session ends (macOS, Linux, Windows)
+
+Here's the dependency list we're starting from:
+
+```toml
+[package]
+name = "pomo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = "0.6.0"
+rust-embed = "8"
+anyhow = "1.0.0"
+```
+
+`gpui-kit` is the star here. As of its 0.6 release, the GPUI ecosystem is organized in layers:
+
+| Crate            | Role                                                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `gpui`           | The core framework: windowing, layout, input, rendering                                                                                 |
+| `gpui-base`      | Unstyled behavior — text editing, selection, dialogs, motion primitives                                                                 |
+| `gpui-component` | The full styled component library (buttons, inputs, etc.) built on `gpui-base`                                                          |
+| `gpui-kit`       | A single-dependency facade that re-exports GPUI plus the component layers, and gives you `gpui_kit::application()` / `gpui_kit::init()` |
+
+Practically, this means `use gpui_kit::*;` gives you everything raw GPUI exposes (`div`, `px`, `rgb`, `Window`, `App`, `Context`, `Render`, and so on), _plus_ `gpui_kit::component::*` for pre-built widgets like `Button`. That's why our example never depends on `gpui` directly — `gpui-kit` is the whole surface area.
+
+`rust-embed` and `anyhow` round things out: `anyhow` is used internally by GPUI's async task system for error handling, and `rust-embed` is a common companion for bundling fonts/icons into the binary (in our case we use `include_bytes!` directly instead, which we'll get to).
+
+---
+
+## 2. The mental model: entities, not plain structs
+
+The single biggest adjustment coming from a typical Rust GUI (or from React/Vue) is that **your application state is not just a struct you own and mutate directly**. GPUI owns it.
+
+In our code:
+
+```rust
+struct App {
+    session: Session,
+    duration: Duration,
+    remaining: Duration,
+    running: bool,
+    last_tick: Option<Instant>,
+    completed_pomodoros: u32,
+}
+```
+
+`App` is a plain Rust struct — nothing GPUI-specific about its _shape_. What makes it a GPUI **entity** is how it gets created: via `cx.new(|_| App::new())` inside `main()`. That call hands ownership of the `App` value to GPUI and gives you back an `Entity<App>` handle — a cheap, `Rc`-like reference you can clone around.
+
+Why does GPUI insist on this instead of letting you hold a `&mut App` directly? Two reasons:
+
+1. **Safety with async and multiple views.** Background tasks, other views, and event callbacks all need a way to safely reach into your state without you hand-rolling `Rc<RefCell<...>>` everywhere and hoping you don't panic on a double-borrow.
+2. **Automatic re-rendering.** Because all mutation goes through GPUI's `Context`, GPUI knows exactly when to call `cx.notify()` on your behalf... except it doesn't do it _automatically_ — you call `cx.notify()` yourself, but GPUI is what makes that notification meaningful (it schedules a re-render of the view tree).
+
+You'll see this pattern constantly: methods that mutate `App` take `&mut self` **and** `cx: &mut Context<Self>`:
+
+```rust
+fn toggle_timer(&mut self, cx: &mut Context<Self>) {
+    self.running = !self.running;
+    if self.running {
+        self.last_tick = Some(Instant::now());
+        self.start_timer(cx);
+    } else {
+        self.last_tick = None;
+    }
+}
+```
+
+`Context<Self>` is your handle back into the GPUI runtime _while you're already inside an update to this specific entity_. It's what lets you spawn async tasks, emit events, or call `cx.notify()`.
+
+---
+
+## 3. The domain model: `Session`
+
+Before touching any GPUI code at all, the app defines a small, framework-agnostic enum:
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+enum Session {
+    Work,
+    ShortBreak,
+    LongBreak,
+}
+
+impl Session {
+    fn duration_secs(&self) -> u64 {
+        match self {
+            Session::Work => 25 * 60,
+            Session::ShortBreak => 5 * 60,
+            Session::LongBreak => 15 * 60,
+        }
+    }
+
+    fn label(&self) -> &'static str { /* ... */ }
+    fn accent(&self) -> u32 { /* ... */ }
+}
+```
+
+This is worth calling out explicitly as a _pattern_, not just an implementation detail: **keep your domain logic (durations, labels, colors-as-data) completely separate from your rendering code.** `Session` doesn't know GPUI exists. That's what makes `App::render()` (below) mostly a matter of reading fields and drawing them, rather than a tangle of `match` statements mixed with layout code. `accent()` returning a raw `u32` (a hex color like `0xe5484d`) rather than a GPUI-specific color type is a small but deliberate choice — it keeps `Session` a pure value type, and GPUI's `rgb()` helper converts it at the point of use.
+
+---
+
+## 4. Constructing the entity: `App::new()`
+
+```rust
+impl App {
+    fn new() -> Self {
+        let initial_session = Session::Work;
+        Self {
+            session: initial_session,
+            duration: Duration::from_secs(initial_session.duration_secs()),
+            remaining: Duration::from_secs(initial_session.duration_secs()),
+            running: false,
+            last_tick: None,
+            completed_pomodoros: 0,
+        }
+    }
+    // ...
+}
+```
+
+Nothing GPUI-specific yet — this is just normal struct initialization. The GPUI-ness only appears at the call site in `main()`, where `cx.new(|_| App::new())` wraps this in an entity. Note the closure signature: `cx.new` gives you a context you _could_ use during construction (for example, to subscribe to something at startup), but here we don't need it, hence `|_|`.
+
+---
+
+## 5. State transitions: `reset`, `advance_session`, `skip`
+
+```rust
+fn reset(&mut self) {
+    self.duration = Duration::from_secs(self.session.duration_secs());
+    self.remaining = self.duration;
+    self.running = false;
+    self.last_tick = None;
+}
+
+fn advance_session(&mut self) {
+    self.session = match self.session {
+        Session::Work => {
+            self.completed_pomodoros += 1;
+            if self.completed_pomodoros % 4 == 0 {
+                Session::LongBreak
+            } else {
+                Session::ShortBreak
+            }
+        }
+        Session::ShortBreak | Session::LongBreak => Session::Work,
+    };
+    self.reset();
+}
+
+fn skip(&mut self, cx: &mut Context<Self>) {
+    self.advance_session();
+    cx.notify();
+}
+```
+
+`reset` and `advance_session` are plain mutations — they don't need `cx` because they don't need to talk to the GPUI runtime, only mutate `self`. `skip`, on the other hand, is a method that gets wired directly to a button click, so it _does_ take `cx` — and critically, it calls `cx.notify()` at the end.
+
+This is the single most important rule in GPUI's rendering model, and it's worth stating as a rule you can copy-paste into your own head:
+
+> **Any time you mutate state that affects what's on screen, call `cx.notify()` before you're done.** GPUI does not diff your struct for changes automatically. If you forget the `cx.notify()`, the UI will silently go stale — the state changed, but nothing tells GPUI to re-run `render()`.
+
+The four-cycle logic (`completed_pomodoros % 4 == 0` triggers a `LongBreak`) is standard Pomodoro Technique behavior: four focus sessions, then a longer break. It's pure `Session`/`App` logic with zero rendering concerns, reinforcing the separation from section 3.
+
+---
+
+## 6. The `Render` trait: turning state into pixels
+
+Every GPUI view implements `Render`:
+
+```rust
+impl Render for App {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // ...
+    }
+}
+```
+
+GPUI calls this method once per frame for the root view (and for any child view that needs it). It hands you `&mut self` (read whatever fields you want) and a `Window`/`Context` pair, and you return _a tree of elements_ describing what should currently be on screen. This is the "declarative" part of GPUI: you don't push pixels around imperatively, you describe the desired output and GPUI figures out how to get there.
+
+### 6.1 Deriving display values from state
+
+The first half of `render()` is just computation — no GPUI calls yet:
+
+```rust
+let total_seconds = self.remaining.as_secs_f32().ceil() as u64;
+let minutes = total_seconds / 60;
+let seconds = total_seconds % 60;
+let timer_text = format!("{minutes:02}:{seconds:02}");
+
+let accent = self.session.accent();
+let total_duration_secs = self.duration.as_secs_f32().max(1.0);
+let elapsed_fraction = 1.0 - (self.remaining.as_secs_f32() / total_duration_secs);
+```
+
+Two details worth calling out because they're easy to get subtly wrong in any countdown UI:
+
+- **`.ceil()` on the remaining seconds.** Without it, the display would show `00:00` for up to a full second before the timer _actually_ finishes, because `24:59.3` truncates to `24:59` seconds remaining — wait, more precisely: as time counts down continuously, truncating (instead of ceiling) would show `00:00` while there's still up to 999ms left. Ceiling keeps `00:01` on screen until the last instant.
+- **`elapsed_fraction`** is derived, not stored. The progress bar's fill width is always computed from `remaining` and `duration` at render time rather than tracked as a separate field — one source of truth, no risk of it drifting out of sync.
+
+### 6.2 Building the element tree
+
+GPUI's layout API reads like Tailwind CSS translated into a Rust builder pattern. Every element starts life as a `div()`:
+
+```rust
+div()
+    .size_full()
+    .bg(rgb(0x0f1012))
+    .text_color(rgb(0xe8e9ea))
+    .font_family("Maple Mono NF")
+    .flex()
+    .items_center()
+    .justify_center()
+    .child( /* ... */ )
+```
+
+Read this the same way you'd read Tailwind utility classes: `.size_full()` is `w-full h-full`, `.bg(...)` is `background-color`, `.flex().items_center().justify_center()` is `display: flex; align-items: center; justify-content: center;`. `rgb(0x0f1012)` takes a hex literal directly — no separate color struct to construct by hand.
+
+`.child(...)` (and `.children(...)` for iterables) is how you nest elements. The example builds up a `div` for the timer's vertical stack (`.flex_col().items_center().gap_6()`), and inside it: the session label, the big timer text, the progress bar, the four cycle dots, and the button row — each just another `div()` or `Button` chained onto `.child()`.
+
+### 6.3 Building UI in a loop
+
+The four cycle dots are a nice small example of building elements programmatically instead of writing four near-identical blocks by hand:
+
+```rust
+let mut dots = div().flex().flex_row().gap_2();
+for i in 0..4 {
+    let filled = i < cycle_filled;
+    dots = dots.child(div().size(px(8.0)).rounded_full().bg(if filled {
+        rgb(accent)
+    } else {
+        rgb(0x2a2c30)
+    }));
+}
+```
+
+Because builder methods like `.child()` consume `self` and return `Self`, you can reassign to the same variable inside a loop exactly like this. There's nothing magic here — it's the same pattern you'd use building up a `String` with `+=`, just applied to an element tree.
+
+### 6.4 The progress bar as two nested `div`s
+
+```rust
+div()
+    .w(px(280.0))
+    .h(px(6.0))
+    .rounded_full()
+    .bg(rgb(0x1e2024))
+    .child(
+        div()
+            .h_full()
+            .rounded_full()
+            .bg(rgb(accent))
+            .w(relative(elapsed_fraction.clamp(0.0, 1.0))),
+    )
+```
+
+This is the classic "track + fill" progress bar pattern: an outer `div` of a fixed pixel width acts as the track, and an inner `div` sized with `relative(fraction)` (a percentage of the parent's width, clamped to `0.0..=1.0`) acts as the fill. Because `elapsed_fraction` is recomputed every render from `remaining`/`duration`, the bar animates smoothly for free as `remaining` ticks down — there's no manual animation/tweening code at all.
+
+---
+
+## 7. Buttons and click handlers
+
+`gpui-kit`'s component layer gives you a pre-styled `Button` instead of making you build one out of a clickable `div` and manual hover states:
+
+```rust
+Button::new("start")
+    .danger()
+    .large()
+    .label(button_text)
+    .w(px(180.0))
+    .h(px(50.0))
+    .rounded(px(15.0))
+    .on_click(cx.listener(|this, _, _, cx| {
+        this.toggle_timer(cx);
+    }))
+```
+
+A few things to unpack:
+
+- `Button::new("start")` — the string is an element ID. GPUI needs stable IDs for interactive elements so it can track things like hover/focus state across frames. It does **not** need to be globally unique across your whole app, just unique among siblings in the same parent.
+- `.danger()` / `.large()` are variant and size builder methods from `gpui-kit`'s `ButtonVariants` and `Sizable` traits (imported at the top: `use gpui_kit::component::{Sizable as _, button::{Button, ButtonVariants as _}};`). Importing traits as `_` is a common Rust idiom when you only need their methods in scope, not the trait name itself.
+- `cx.listener(|this, _, _, cx| { ... })` is the piece that makes event handling in GPUI safe and ergonomic. `cx.listener` wraps a closure so that, when the click fires, GPUI automatically re-acquires a valid `&mut App` (`this`) and the current `Context<App>` (`cx`) for you — you never have to manually upgrade a weak handle or worry about borrowing the entity while it's already borrowed elsewhere. The two `_` parameters are the click event and the `Window`, both unused here.
+
+The Reset and Skip buttons follow the identical shape, just calling `this.reset()` / `this.skip(cx)` instead. Notice that `reset()` doesn't take `cx`, so the listener has to call `cx.notify()` itself after calling it:
+
+```rust
+.on_click(cx.listener(|this, _, _, cx| {
+    this.reset();
+    cx.notify();
+}))
+```
+
+This is a direct consequence of the rule from section 5: whichever piece of code is the _last_ one to touch state before returning to GPUI is responsible for calling `cx.notify()`.
+
+---
+
+## 8. The async timer loop
+
+This is the most advanced part of the file, and the part where GPUI's design pays off the most. A countdown timer needs to tick in the background _without_ blocking the UI thread, and it needs to safely mutate `App` from outside the normal render/click flow.
+
+```rust
+fn start_timer(&mut self, cx: &mut Context<Self>) {
+    cx.spawn(async move |entity, cx| {
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+
+            let should_continue = entity.update(cx, |app, cx| {
+                if !app.running {
+                    return false;
+                }
+
+                let now = Instant::now();
+                let delta = if let Some(last) = app.last_tick {
+                    now.duration_since(last)
+                } else {
+                    Duration::ZERO
+                };
+                app.last_tick = Some(now);
+
+                if app.remaining > delta {
+                    app.remaining -= delta;
+                    cx.notify();
+                    true
+                } else {
+                    app.notify_session_end();
+                    app.advance_session();
+                    cx.notify();
+                    false
+                }
+            })?;
+
+            if !should_continue {
+                break;
+            }
+        }
+        Ok::<(), gpui_kit::private::anyhow::Error>(())
+    })
+    .detach();
+}
+```
+
+Step by step:
+
+1. **`cx.spawn(async move |entity, cx| { ... })`** kicks off an asynchronous task on GPUI's own executor. Inside, you get a **weak-ish `entity` handle** to `App` and an `AsyncApp` context — deliberately _not_ the same `&mut App` you have in a synchronous method, because the async block will outlive the current call and needs to reacquire access safely each time it wants to touch state.
+2. **`cx.background_executor().timer(Duration::from_millis(16)).await`** sleeps for one frame at 60 FPS without blocking any OS thread — it's cooperative, async sleep, scheduled by GPUI's own executor rather than `std::thread::sleep`. This is what makes the progress bar look smooth: rather than ticking once a second, the task wakes up every ~16ms, recomputes elapsed time using real wall-clock deltas (`Instant::now() - last_tick`), and lets `render()`'s `elapsed_fraction` calculation do the rest.
+3. **`entity.update(cx, |app, cx| { ... })`** is the async equivalent of "give me `&mut App` for just long enough to run this closure." It returns whatever the closure returns — here, a `bool` for "should the loop keep running." Using delta time (`now.duration_since(last)`) instead of assuming exactly 16ms elapsed is important: OS schedulers are never perfectly precise, so accumulating drift over a 25-minute timer would eventually be noticeable if you just subtracted a fixed 16ms every tick.
+4. **Cooperative shutdown via a `bool`, not a cancellation token.** Rather than reaching in from outside to kill the task, the loop simply checks `app.running` on every tick and returns `false` from the closure (and then `break`s) the moment the user pauses or a session ends. This means `toggle_timer` doesn't need to hold onto a task handle to cancel it — pausing is just flipping `running` to `false` and letting the next tick notice.
+5. **`.detach()`** tells GPUI "I'm not going to hold onto this task's handle — let it run to completion (or until it breaks out of the loop) on its own." If you dropped the `Task` returned by `cx.spawn` without detaching it, GPUI would cancel it immediately, which is a very common early GPUI bug (a timer that silently never ticks because the `Task` fell out of scope).
+
+Every time `toggle_timer` is called with `running` newly set to `true`, it calls `start_timer`, spinning up a _new_ loop. Because the old loop's `bool` check catches `!app.running` on its very next 16ms tick and exits, you never actually get two loops running concurrently — the old one dies almost immediately after (or even before) the new one starts.
+
+---
+
+## 9. Talking to the OS: native notifications
+
+```rust
+fn notify_session_end(&self) {
+    let title = "Pomodoro Timer";
+    let message = match self.session {
+        Session::Work => "Focus session complete! Time for a break.",
+        Session::ShortBreak | Session::LongBreak => "Break is over! Ready to focus?",
+    };
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("osascript")
+        .args(["-e", &format!(
+            "display notification \"{}\" with title \"{}\" sound name \"Glass\"",
+            message, title
+        )])
+        .spawn()
+        .ok();
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("notify-send")
+        .args([title, message])
+        .spawn()
+        .ok();
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("powershell")
+        .args(["-Command", &format!(
+            "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('{}', '{}')",
+            message, title
+        )])
+        .spawn()
+        .ok();
+}
+```
+
+This part isn't GPUI-specific at all, which is itself a useful lesson: **GPUI doesn't try to own everything.** For OS-level concerns outside the UI — desktop notifications here — the example reaches for plain `std::process::Command`, gated per-platform with `#[cfg(target_os = "...")]`, rather than pulling in a heavier crate like `notify-rust`. `.spawn()` (the `std::process` kind, unrelated to `cx.spawn`) launches the process and immediately returns without waiting for it to finish; `.ok()` discards the `Result` since a failed notification shouldn't ever crash the timer.
+
+Note the naming collision to watch for as you read GPUI code: `Command::spawn` (start an OS process) and `Context::spawn` (start a GPUI async task) are unrelated APIs that happen to share a name.
+
+---
+
+## 10. Bootstrapping: `main()`
+
+```rust
+fn main() {
+    let app = gpui_kit::application();
+
+    app.run(|cx| {
+        gpui_kit::init(cx);
+        cx.text_system()
+            .add_fonts(vec![
+                Cow::Borrowed(include_bytes!("../font/MapleMono-NF-Regular.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../font/MapleMono-NF-Bold.ttf").as_slice()),
+            ])
+            .expect("Failed to load font");
+
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(0.0), px(0.0)),
+                    size: size(px(1200.0), px(760.0)),
+                })),
+                ..Default::default()
+            },
+            |window, cx| {
+                let view = cx.new(|_| App::new());
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        )
+        .expect("failed to open window");
+
+        cx.activate(true);
+    });
+}
+```
+
+Walking through it in order:
+
+1. **`gpui_kit::application()`** creates the top-level `Application` object — the thing that owns the OS event loop, the platform windowing layer, and GPUI's async executors. Nothing runs until you call `.run(...)` on it.
+2. **`app.run(|cx| { ... })`** is where your whole app lives. The closure receives an `&mut App` context (confusingly also called `App` in raw GPUI — not to be confused with _our_ `App` struct; this is why real-world GPUI code often renames one of the two to avoid the clash, though the example here gets away without it since the two never appear in the same scope with ambiguous meaning).
+3. **`gpui_kit::init(cx)`** must be called before any `gpui-kit`/`gpui-component` UI features are used — it registers the styling, theming, and asset infrastructure the component layer depends on. Skipping this is a very common "why is my button not rendering / panicking" mistake.
+4. **Loading fonts.** `cx.text_system().add_fonts(vec![...])` registers font bytes with GPUI's text system. `include_bytes!("../font/MapleMono-NF-Regular.ttf")` embeds the font file directly into the compiled binary at build time (no runtime file path to manage, no missing-font failures on a machine that doesn't have Maple Mono installed system-wide) and `Cow::Borrowed(...).as_slice()` adapts the `&'static [u8]` into the `Cow<[u8]>` shape the API expects. `.expect(...)` is a reasonable choice here since a missing/corrupt embedded font is a build-time problem, not a runtime one worth recovering from gracefully.
+5. **`cx.open_window(WindowOptions { ... }, |window, cx| { ... })`** creates the actual OS window. `WindowBounds::Windowed(Bounds { origin, size })` requests a specific position and size (`1200×760`) rather than, say, fullscreen or maximized. The second closure is where the _view hierarchy_ for that window is constructed.
+6. **`let view = cx.new(|_| App::new());`** — this is the moment our `App` struct actually becomes a GPUI entity, exactly as discussed in section 2.
+7. **`cx.new(|cx| Root::new(view, window, cx))`** wraps our view in `gpui-kit`'s `Root` component. Every window needs exactly one `Root` at the top of its view tree — it's what wires up theming, layering (for things like modals/popovers), and other cross-cutting concerns that a single leaf view like `App` shouldn't have to know about itself.
+8. **`cx.activate(true)`** brings the app to the foreground / gives it focus on launch, which matters especially on macOS where a newly-spawned GUI process doesn't always grab focus automatically.
+
+---
+
+## 11. Running it
+
+Assuming the `Cargo.toml` at the top of this post and a `font/` directory next to your `Cargo.toml` containing `MapleMono-NF-Regular.ttf` and `MapleMono-NF-Bold.ttf`:
+
+```bash
+cargo run --release
+```
+
+GPUI apps are meaningfully faster in release mode than debug (the layout/paint pipeline does real work every frame), so it's worth getting in the habit of reaching for `--release` early rather than wondering why debug builds feel sluggish.
+
+---
+
+## 12. Key takeaways to carry into your own GPUI app
+
+- **State lives in entities, not bare structs.** You create one with `cx.new(...)`, and every mutation that should be visible ends with `cx.notify()`.
+- **`render()` is pure-ish.** Read state, derive display values, build an element tree with `div()`/`.flex()`/`.bg()`/etc. Don't be afraid to compute derived values (like `elapsed_fraction`) fresh every frame instead of caching them — GPUI is built to make that cheap.
+- **`cx.listener(...)` is how you safely get `&mut Self` back inside a click handler**, without manual borrow juggling.
+- **`cx.spawn` + `entity.update(...)` + `.detach()`** is the standard shape for any background work — timers, network requests, file I/O — that needs to eventually mutate view state.
+- **GPUI doesn't try to abstract away the OS.** For things genuinely outside the UI's job (desktop notifications, here), reaching for `std::process::Command` behind `#[cfg(target_os = "...")]` is completely idiomatic.
+- **`gpui-kit` is a convenience layer, not a different framework.** Everything you learn about raw `gpui` (entities, `Context`, `Render`, the element-builder API) applies directly; `gpui-kit` just saves you from wiring up `gpui` + `gpui-component` + friends as separate dependencies and gives you a styled `Button` for free.
+
+From here, natural next steps are wiring up keyboard shortcuts via GPUI's `actions!` macro, persisting `completed_pomodoros` across restarts, or swapping the hand-rolled OS-notification `Command` calls for a small tray-icon integration — none of which require anything beyond the concepts covered above.
