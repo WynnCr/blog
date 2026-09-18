@@ -1,0 +1,53 @@
+---
+import '../styles/global.css';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import CommandPalette from '../components/CommandPalette.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = "Notes on building things, learning, and figuring shit out." } = Astro.props;
+const pageTitle = title === 'Amrit' ? title : `${title} · Amrit`;
+const rssHref = new URL(`${import.meta.env.BASE_URL}rss.xml`, Astro.site);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>~</text></svg>" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+
+    <link rel="alternate" type="application/rss+xml" title="Amrit" href={rssHref} />
+
+    <script is:inline>
+      // Applied before paint to avoid a flash of the wrong theme.
+      (function () {
+        const stored = localStorage.getItem('theme');
+        if (stored === 'light' || stored === 'dark') {
+          document.documentElement.setAttribute('data-theme', stored);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="mx-auto flex min-h-screen max-w-[720px] flex-col px-6">
+      <Header />
+      <main class="flex-1">
+        <slot />
+      </main>
+      <Footer />
+    </div>
+    <CommandPalette />
+  </body>
+</html>

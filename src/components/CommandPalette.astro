@@ -1,0 +1,110 @@
+---
+const base = import.meta.env.BASE_URL;
+---
+<div
+  id="palette-overlay"
+  class="fixed inset-0 z-50 hidden items-start justify-center pt-[15vh]"
+  style="background: color-mix(in srgb, var(--bg) 60%, transparent); backdrop-filter: blur(3px);"
+>
+  <div
+    id="palette-box"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Command palette"
+    class="w-[90%] max-w-[480px] overflow-hidden rounded-xl border shadow-xl"
+    style="background: var(--bg-raised); border-color: var(--border);"
+  >
+    <input
+      id="palette-input"
+      type="text"
+      placeholder="Search..."
+      autocomplete="off"
+      class="w-full border-b bg-transparent px-4 py-3 text-[0.9375rem] outline-none"
+      style="border-color: var(--border); color: var(--text);"
+    />
+    <ul id="palette-list" class="max-h-[280px] overflow-y-auto py-2 text-sm"></ul>
+  </div>
+</div>
+
+<script define:vars={{ base }}>
+  const items = [
+    { label: 'Home', href: base },
+    { label: 'Writing', href: `${base}writing` },
+    { label: 'Projects', href: `${base}projects` },
+    { label: 'About', href: `${base}about` },
+    { label: 'Toggle theme', action: 'theme' },
+    { label: 'GitHub', href: 'https://github.com/WynnCr', external: true },
+  ];
+
+  const overlay = document.getElementById('palette-overlay');
+  const box = document.getElementById('palette-box');
+  const input = document.getElementById('palette-input');
+  const list = document.getElementById('palette-list');
+  let active = 0;
+  let filtered = items;
+
+  function render() {
+    if (!list) return;
+    list.innerHTML = '';
+    filtered.forEach((item, i) => {
+      const li = document.createElement('li');
+      li.textContent = item.label;
+      li.className = 'cursor-pointer px-4 py-2 transition-colors duration-100';
+      li.style.color = i === active ? 'var(--text)' : 'var(--muted)';
+      li.style.background = i === active ? 'var(--code-bg)' : 'transparent';
+      li.addEventListener('mouseenter', () => { active = i; render(); });
+      li.addEventListener('click', () => choose(item));
+      list.appendChild(li);
+    });
+  }
+
+  function choose(item) {
+    if (item.action === 'theme') {
+      document.getElementById('theme-toggle')?.click();
+    } else if (item.href) {
+      window.location.href = item.href;
+    }
+    close();
+  }
+
+  function open() {
+    overlay?.classList.remove('hidden');
+    overlay?.classList.add('flex');
+    input.value = '';
+    filtered = items;
+    active = 0;
+    render();
+    setTimeout(() => input?.focus(), 10);
+  }
+
+  function close() {
+    overlay?.classList.add('hidden');
+    overlay?.classList.remove('flex');
+  }
+
+  input?.addEventListener('input', () => {
+    const q = input.value.toLowerCase();
+    filtered = items.filter((i) => i.label.toLowerCase().includes(q));
+    active = 0;
+    render();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      overlay?.classList.contains('hidden') ? open() : close();
+    }
+    if (!overlay?.classList.contains('hidden')) {
+      if (e.key === 'Escape') close();
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, filtered.length - 1); render(); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); render(); }
+      if (e.key === 'Enter' && filtered[active]) { choose(filtered[active]); }
+    }
+  });
+
+  overlay?.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+
+  window.addEventListener('open-command-palette', open);
+</script>

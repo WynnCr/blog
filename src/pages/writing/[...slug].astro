@@ -1,0 +1,66 @@
+---
+import { getCollection, render } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { formatDate, estimateReadingTime } from '../../lib/format';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('blog', ({ data }) => !data.draft);
+  const sorted = posts.sort((a, b) => a.data.date.valueOf() - b.data.date.valueOf());
+
+  return sorted.map((post, i) => ({
+    params: { slug: post.id },
+    props: {
+      post,
+      prev: sorted[i - 1] ?? null,
+      next: sorted[i + 1] ?? null,
+    },
+  }));
+}
+
+const { post, prev, next } = Astro.props;
+const { Content } = await render(post);
+const base = import.meta.env.BASE_URL;
+---
+<BaseLayout title={post.data.title} description={post.data.excerpt}>
+  <article class="pt-4">
+    <a href={`${base}writing`} class="text-sm" style="color: var(--muted)">&larr; Writing</a>
+
+    <h1 class="mt-6 text-[1.875rem] font-medium leading-[1.2] tracking-tight sm:text-[2.125rem]">
+      {post.data.title}
+    </h1>
+    <div class="mt-3 flex items-center gap-3 text-sm" style="color: var(--muted)">
+      <span>{formatDate(post.data.date)}</span>
+      <span>&middot;</span>
+      <span>{estimateReadingTime(post.body)}</span>
+    </div>
+
+    <div class="prose mt-10">
+      <Content />
+    </div>
+
+    <nav class="mt-16 flex items-center justify-between border-t pt-6 text-sm" style="border-color: var(--border)">
+      {prev ? (
+        <a href={`${base}writing/${prev.id}`} class="prose-link max-w-[45%]">&larr; {prev.data.title}</a>
+      ) : <span />}
+      {next ? (
+        <a href={`${base}writing/${next.id}`} class="prose-link max-w-[45%] text-right">{next.data.title} &rarr;</a>
+      ) : <span />}
+    </nav>
+  </article>
+</BaseLayout>
+
+<script>
+  // Adds a small copy button to every code block rendered in the article.
+  document.querySelectorAll('.prose pre').forEach((pre) => {
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = 'copy';
+    btn.addEventListener('click', async () => {
+      const code = pre.querySelector('code')?.textContent ?? '';
+      await navigator.clipboard.writeText(code);
+      btn.textContent = 'copied';
+      setTimeout(() => (btn.textContent = 'copy'), 1500);
+    });
+    pre.appendChild(btn);
+  });
+</script>

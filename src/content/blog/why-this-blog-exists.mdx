@@ -1,0 +1,30 @@
+---
+title: "Why I built this blog from scratch"
+excerpt: "Astro, Markdown, and no database — on picking a boring stack so the writing stays the interesting part."
+date: 2026-08-20
+tags: ["meta", "astro"]
+---
+
+I didn't want a theme. I wanted a Git repository full of Markdown files
+that happens to render as a website.
+
+## The stack
+
+- **Astro** for static generation — no client-side framework tax for a
+  site that's 95% text.
+- **MDX** for posts, so code blocks and the occasional embedded component
+  live in the same file as the writing.
+- **Tailwind**, used sparingly, for layout and spacing rather than
+  decoration.
+- **GitHub Actions** to build and deploy to **GitHub Pages** on every
+  push to `main`.
+
+No CMS, no backend, no database. A new post is a new file in
+`src/content/blog/`.
+
+## What I optimized for
+
+Mostly: getting out of my own way. If publishing a post takes more than
+"write Markdown, commit, push," I'll stop writing posts. Everything about
+this setup — the lack of a database, the plain-text content, the boring
+deploy pipeline — is in service of that one constraint.

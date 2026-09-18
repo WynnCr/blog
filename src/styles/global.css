@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/inter/wght-italic.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* ---------------------------------------------------------
+   Design tokens
+   --------------------------------------------------------- */
+:root {
+  --bg: #fafafa;
+  --bg-raised: #f2f2f3;
+  --text: #18181b;
+  --muted: #71717a;
+  --faint: #d4d4d8;
+  --accent: #d6482f;
+  --accent-ink: #fff7f5;
+  --border: #e4e4e7;
+  --code-bg: #f0f0f1;
+
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SF Mono", Menlo, monospace;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --t-fast: 150ms;
+  --t-normal: 250ms;
+  --t-slow: 400ms;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --bg-raised: #131313;
+  --text: #ededed;
+  --muted: #8b8b8b;
+  --faint: #2b2b2d;
+  --accent: #ff6347;
+  --accent-ink: #1a0e0b;
+  --border: #232325;
+  --code-bg: #111113;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a0a0a;
+    --bg-raised: #131313;
+    --text: #ededed;
+    --muted: #8b8b8b;
+    --faint: #2b2b2d;
+    --accent: #ff6347;
+    --accent-ink: #1a0e0b;
+    --border: #232325;
+    --code-bg: #111113;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  transition: background var(--t-normal) var(--ease), color var(--t-normal) var(--ease);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.prose-link {
+  color: var(--text);
+  border-bottom: 1px solid var(--faint);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.prose-link:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---------------------------------------------------------
+   Article typography (applies inside .prose)
+   --------------------------------------------------------- */
+.prose {
+  color: var(--text);
+  max-width: 100%;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+.prose > * + * {
+  margin-top: var(--space-6);
+}
+.prose h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: var(--space-12);
+  margin-bottom: var(--space-2);
+}
+.prose h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-top: var(--space-8);
+  margin-bottom: var(--space-2);
+}
+.prose p, .prose li {
+  color: var(--text);
+}
+.prose ul, .prose ol {
+  padding-left: 1.25em;
+}
+.prose li + li {
+  margin-top: var(--space-2);
+}
+.prose a {
+  color: var(--text);
+  border-bottom: 1px solid var(--faint);
+}
+.prose a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.prose blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-4);
+  color: var(--muted);
+  font-style: italic;
+}
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+.prose pre {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  padding: var(--space-4) var(--space-4);
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  position: relative;
+}
+.prose pre code {
+  background: none;
+  padding: 0;
+}
+.prose img {
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.copy-btn {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.prose pre:hover .copy-btn {
+  opacity: 1;
+}
+.copy-btn:hover {
+  color: var(--accent);
+}

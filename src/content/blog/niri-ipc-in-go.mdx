@@ -1,0 +1,38 @@
+---
+title: "Talking to Niri's IPC socket from Go"
+excerpt: "The basics of ghost-bar's toolkit: connecting to niri msg, parsing JSON events, and building a shell around it."
+date: 2026-09-03
+tags: ["go", "wayland", "niri"]
+---
+
+A good chunk of the Niri ecosystem — status bars, screen time trackers,
+window switchers — comes down to one thing: talking to Niri's IPC socket.
+`ghost-bar` (formerly niriipc) started as a small Go package to make that
+less repetitive.
+
+## Connecting
+
+Niri exposes a Unix socket you can connect to directly, or you can shell
+out to `niri msg`. For anything long-running, the socket is the better
+option since it lets you subscribe to an event stream instead of polling.
+
+```go
+conn, err := net.Dial("unix", os.Getenv("NIRI_SOCKET"))
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
+```
+
+## Parsing events
+
+Niri's event stream is newline-delimited JSON. Each line is one event —
+a workspace change, a window focus change, a window closing — and the
+shape differs per event type, so a lot of the toolkit is just well-typed
+Go structs around that stream.
+
+## Where this is going
+
+The end goal is a small set of composable pieces — workspace indicator,
+window title, a focus-tracking library — that other Niri tools, including
+ghost-watch, can build on without each reimplementing the same IPC glue.

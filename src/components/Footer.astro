@@ -1,0 +1,20 @@
+---
+const base = import.meta.env.BASE_URL;
+const year = new Date().getFullYear();
+---
+<footer class="mt-24 flex items-center justify-between border-t py-8 text-sm" style="border-color: var(--border); color: var(--muted)">
+  <span>&copy; {year} Amrit</span>
+  <div class="flex items-center gap-5">
+    <a href="https://github.com/WynnCr" target="_blank" rel="noreferrer noopener" class="transition-colors duration-150 hover:!text-[var(--text)]">github</a>
+    <a href={`${base}rss.xml`} class="transition-colors duration-150 hover:!text-[var(--text)]">rss</a>
+    <button id="palette-trigger-footer" class="transition-colors duration-150 hover:!text-[var(--text)]">
+      <kbd class="font-mono text-xs">&#8984;K</kbd>
+    </button>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('palette-trigger-footer')?.addEventListener('click', () => {
+    window.dispatchEvent(new CustomEvent('open-command-palette'));
+  });
+</script>

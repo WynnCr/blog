@@ -1,0 +1,31 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import PostRow from '../../components/PostRow.astro';
+
+const allPosts = await getCollection('blog', ({ data }) => !data.draft);
+const posts = allPosts.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+---
+<BaseLayout title="Writing" description="All posts by Amrit.">
+  <section class="pt-4">
+    <h1 class="text-2xl font-medium tracking-tight">Writing</h1>
+    <p class="mt-2 text-[0.9375rem]" style="color: var(--muted)">
+      {posts.length} post{posts.length === 1 ? '' : 's'}, mostly about Linux, Rust and Go.
+    </p>
+
+    <div class="mt-8 divide-y" style="border-color: var(--border)">
+      {posts.map((post) => (
+        <div class="border-b last:border-none" style="border-color: var(--border)">
+          <PostRow
+            slug={post.id}
+            title={post.data.title}
+            excerpt={post.data.excerpt}
+            date={post.data.date}
+            tags={post.data.tags}
+            body={post.body}
+          />
+        </div>
+      ))}
+    </div>
+  </section>
+</BaseLayout>
